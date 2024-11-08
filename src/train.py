@@ -15,11 +15,13 @@ from datasets import SlicedDataset, NPYDataset
 from utils import sample, sample_v1, get_constants
 from accelerate import Accelerator
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from models import DiffUNet
 
 from datetime import datetime
 import os
 import argparse
 import pdb
+import yaml
 
 
 
@@ -28,136 +30,149 @@ def parse_args():
     
     # Adding arguments
     parser.add_argument("--dataset", default="IllustrisTNG", type=str, required=False, help="IllustrisTNG, Astrid, or SIMBA.")
-    parser.add_argument("--epochs", type=int, required=False, default= 20, help="Number of epochs for training.")
+    parser.add_argument("--epochs", type=int, required=False, default= 10, help="Number of epochs for training.")
     parser.add_argument("--batch_size", type=int, required=False, default=12, help="Batch size for training.")
+    parser.add_argument("--timesteps", type=int, required=False, default=1000, help="Timesteps for training.")
     parser.add_argument("--learning_rate", type=float, default=1e-4,required=False, help="Learning rate for training.")
     parser.add_argument("--img_size", type=int, required=False, default=64, help="Image size. Single int, (H = W).")
+    parser.add_argument("--unconditional", action="store_true", help="Enable unconditional mode")
     parser.add_argument("--out_path", type=str, required=False, default="/groups/mlprojects/dm_diffusion/model_out/", help="Path to save models.")
     
     # Parsing arguments
     return parser.parse_args()
 
-# TODO: Move to config --> Work w/ 64x64, Test 256x256
 
 def main(args):
     accelerator = Accelerator()
     print(f"Using device: {accelerator.device}")
+    args.conditional = not args.unconditional
+    config = {
+        "batch_size": args.batch_size,
+        "epochs": args.epochs,
+        "learning_rate": args.learning_rate,
+        "num_timesteps": args.timesteps,
+        "image_size": args.img_size,
+        "conditioning_channels": 1,
+        "target_channels": 1,
+        "stellar_file": f'/groups/mlprojects/dm_diffusion/data/Maps_Mstar_{args.dataset}_LH_z=0.00.npy',
+        "dm_file": f"/groups/mlprojects/dm_diffusion/data/Maps_Mcdm_{args.dataset}_LH_z=0.00.npy",
+        "conditional": args.conditional
+    }
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_path = os.path.join(args.out_path, f"{timestamp}")
+    save_path = os.path.join(args.out_path, os.path.join(f"lr{args.learning_rate}_step{args.timesteps}_size{args.img_size}_cond{args.conditional}",timestamp))
     os.makedirs(save_path, exist_ok=True)
-
-    npy_file = f"/groups/mlprojects/dm_diffusion/data/Maps_Mcdm_{args.dataset}_LH_z=0.00.npy"
+    with open(os.path.join(save_path, 'config.yaml'), "w") as file: yaml.dump(config, file, default_flow_style=False)
+    # TODO: Save config to file
     
     log_transform = transforms.Lambda(
         lambda x: torch.log10(x + 1)  # Applying log transformation
     )
 
-    norm_transform = transforms.Lambda( # Using transform from -1 to 1
-        lambda x: ((x - x.min()) / (x.max() - x.min()) - 0.5)*2
-    )
+    # norm_transform = transforms.Lambda( # Using transform from -1 to 1
+    #     lambda x: ((x - x.min()) / (x.max() - x.min()) - 0.5)*2
+    # )
 
-    constants = get_constants(args.dataset)
-    # Using transforms.Normalize((constants['mean'],), (constants['std'],)) where mean and std correspond 
-    # to the dataset does not work
+    norm_transform = transforms.Lambda( # Using transform from -1 to 1
+        lambda x: ((x - x.min()) / (x.max() - x.min()))
+    )
 
     transform = transforms.Compose([transforms.ToTensor(),
                                     transforms.Resize((args.img_size, args.img_size)),
                                     # transforms.RandomCrop((args.img_size, args.img_size)),
                                     log_transform,
                                     norm_transform, 
-                                    # transforms.Normalize((constants['mean'],), (constants['std'],))
     ])
 
-    dataset = SlicedDataset(npy_file, transform=transform)
+    dm_dataset = SlicedDataset(config["dm_file"], transform=transform)
+    dm_dataloader = DataLoader(dm_dataset, batch_size=args.batch_size, shuffle=True)
+    stellar_dataloader = None
+    if args.conditional:
+        stellar_dataset = SlicedDataset(config["stellar_file"], transform=transform)
+        stellar_dataloader = DataLoader(stellar_dataset, batch_size=args.batch_size, shuffle=True)
     # pdb.set_trace()
+    
+    noise_scheduler = DDPMScheduler(num_train_timesteps=args.timesteps)
 
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
-    noise_scheduler = DDPMScheduler(num_train_timesteps=1000)
-
-    model = UNet2DModel(
-        sample_size=args.img_size,                  
-        in_channels=1,                    
-        out_channels=1,                   
-        down_block_types=(
-            "DownBlock2D", "DownBlock2D", "DownBlock2D", "AttnDownBlock2D"
-        ),                                
-        up_block_types=(
-            "AttnUpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"
-        ),                                
-        block_out_channels=(48, 96, 192, 384),  
-        layers_per_block=2,               
-        norm_num_groups=8,                
-        act_fn="silu",                    
-        # time_embedding_type="fourier",    # Breaks it
-        attention_head_dim=8,             
-        add_attention=True,               
-        num_train_timesteps=1000,         
-        downsample_type='resnet',
-        upsample_type='resnet'
-    )
-    # Added resnet blocks instead of conv, fourier time embeddings, out channels for blocks
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model = DiffUNet(config, conditional=args.conditional).to(device)
+    print(model.conditional)
     
     # Prepare everything with Accelerator
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
-    model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
+    model, optimizer, dm_dataloader, stellar_dataloader = accelerator.prepare(model, optimizer, dm_dataloader, stellar_dataloader)
 
+    epoch_losses = []
+    for epoch in range(config["epochs"]):
+        vis = True
+        total_loss = 0.0
+        num_batches = 0
 
-    losses = []
-    for epoch in range(args.epochs):
-        imgs = True
-        with tqdm(dataloader, desc=f"Epoch {epoch+1}/{args.epochs}", unit="batch") as tepoch:
-            for step, image in enumerate(tepoch):
-                if imgs: 
-                    plt.figure()
-                    plt.imshow(image[0,0,:,:].detach().cpu().numpy())
-                    plt.savefig(os.path.join(save_path, f'GT_ep{epoch}.png'), format='png')
-                    plt.close()
-                    imgs = False
-                clean_images = image.to(accelerator.device)
-                # Sample noise to add to the images
-                noise = torch.randn(clean_images.shape).to(clean_images.device)
-                bs = clean_images.shape[0]
+        ep_dir = os.path.join(save_path, f'ep{epoch}')
+        os.makedirs(ep_dir, exist_ok=True)
 
-                # Sample random timestep for each image
-                timesteps = torch.randint(
-                    0, noise_scheduler.config.num_train_timesteps, (bs,), device=clean_images.device
-                ).long()
+        # Set up progress bar for the current epoch
+        if args.conditional:
+            combined_maps = zip(stellar_dataloader, dm_dataloader)
+            batch_progress = tqdm(combined_maps, desc=f"Epoch {epoch+1}/{config['epochs']}", leave=False)
+        else:
+            combined_maps = dm_dataloader
+            batch_progress = tqdm(combined_maps, desc=f"Epoch {epoch+1}/{config['epochs']}", leave=False)
+        
+        # Batch processing within epoch
+        for maps in batch_progress:
+            if args.conditional:
+                stellar_maps, dm_maps = maps[0].to(device), maps[1].to(device)
+            else:
+                dm_maps = maps.to(device)
 
-                # Add noise to the clean images according to the noise magnitude at each timestep
-                noisy_images = noise_scheduler.add_noise(clean_images, noise, timesteps)
+            noise = torch.randn_like(dm_maps)
+            timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (dm_maps.shape[0],), device=device).long()
+            noisy_dm = noise_scheduler.add_noise(dm_maps, noise, timesteps)
+            
+            if vis:
+                fig = plt.figure()
+                sample_img = plt.imshow(dm_maps[0][0].cpu().numpy(), cmap='viridis')
+                fig.colorbar(sample_img)
+                plt.savefig(os.path.join(ep_dir, "GT.png"))
 
-                noise_pred = model(noisy_images, timesteps)
+            # Model prediction
+            if args.conditional:
+                pred_noise = model(noisy_dm, timesteps, stellar_maps)
+            else:
+                pred_noise = model(noisy_dm, timesteps)
 
-                noise_pred = noise_pred[0] 
-                loss = F.mse_loss(noise_pred, noise)
-                accelerator.backward(loss)
-                losses.append(loss.item())
+            # Compute loss and backpropagation
+            loss = nn.MSELoss()(pred_noise, noise)
+            epoch_losses.append(loss.item())
 
-                optimizer.step()
-                optimizer.zero_grad()
+            optimizer.zero_grad()
+            accelerator.backward(loss)
+            optimizer.step()
 
-                tepoch.set_postfix(loss=loss.item())
+            # Update progress bar with batch loss
+            total_loss += loss.item()
+            num_batches += 1
+            batch_progress.set_postfix(batch_loss=loss.item())  # Shows current batch loss
 
         scheduler.step()
-        # Calculate and print the loss for the last epoch
-        loss_last_epoch = sum(losses[-len(dataloader):]) / len(dataloader)
-        print(f"Epoch {epoch+1} loss: {loss_last_epoch}")
-        
-        # Save the model after every epoch
+
+        # Average loss for the epoch
+        avg_loss = total_loss / num_batches
+        tqdm.write(f"Epoch [{epoch+1}/{config['epochs']}], Loss: {avg_loss:.4f}")
+
+        # Save model checkpoint
         unwrapped_model = accelerator.unwrap_model(model)
         model_save_path = os.path.join(save_path, f"model_epoch_{epoch+1}.pt")
         torch.save(unwrapped_model.state_dict(), model_save_path)
         print(f"Model saved to {model_save_path}")
 
-        # Sample
-        sample_v1(model, noise_scheduler, os.path.join(save_path, f'ep{epoch}_sample.png'), device='cuda')
+        # Sampling step
+        sample_v1(model, noise_scheduler, ep_dir, condition_loader=stellar_dataloader, device=device)
 
-    # Save all losses
-    losses = np.array(losses)
-    np.save(f'{save_path}/losses.npy', losses)
-
+    # Save all epoch losses
+    np.save(f'{save_path}/losses.npy', np.array(epoch_losses))
 
 if __name__ == "__main__":
     args = parse_args()
