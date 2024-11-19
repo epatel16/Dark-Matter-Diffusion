@@ -12,7 +12,7 @@ from diffusers import UNet2DModel
 
 from tqdm import tqdm
 from datasets import SlicedDataset, PairedDataset, NPYDataset
-from utils import sample, sample_v1, sample_v2, get_constants
+from utils import sample, sample_v3, sample_v2, get_constants, add_gaussian_noise
 from accelerate import Accelerator
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from models import DiffUNet
@@ -37,7 +37,7 @@ def parse_args():
     parser.add_argument("--img_size", type=int, required=False, default=64, help="Image size. Single int, (H = W).")
     parser.add_argument("--unconditional", action="store_true", help="Enable unconditional mode")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    parser.add_argument("--out_path", type=str, required=False, default="/groups/mlprojects/dm_diffusion/model_out/", help="Path to save models.")
+    parser.add_argument("--out_path", type=str, required=False, default="/groups/mlprojects/dm_diffusion/model_out/noised_mstar/", help="Path to save models.")
     
     # Parsing arguments
     return parser.parse_args()
@@ -57,7 +57,9 @@ def main(args):
         "target_channels": 1,
         "stellar_file": f'/groups/mlprojects/dm_diffusion/data/Maps_Mstar_{args.dataset}_LH_z=0.00.npy',
         "dm_file": f"/groups/mlprojects/dm_diffusion/data/Maps_Mcdm_{args.dataset}_LH_z=0.00.npy",
-        "conditional": args.conditional
+        "conditional": args.conditional, 
+        "sigma_noise": 0,
+        "num_workers": 1
     }
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -72,31 +74,41 @@ def main(args):
     #     transforms.Resize((config["image_size"], config["image_size"])),  # Resize to 64x64
     #     transforms.Lambda(lambda x: ((x - x.min()) / (x.max() - x.min()) - 0.5) * 2)  # Normalize to [-1, 1]
     # ])
-    
+
     transform_dm = transforms.Compose([
         transforms.Lambda(lambda x: torch.log10(x + 1e-8)),  # Log transformation
-        transforms.Lambda(lambda x: (x - 10.971004486083984) / 0.5090954303741455)
         transforms.Resize((config["image_size"], config["image_size"])),  # Resize to 64x64
+        transforms.Lambda(lambda x: (x - 10.971004486083984) / 0.5090954303741455)
         # transforms.Normalize((10.971004486083984,), (0.5090954303741455,)) # Global Normalization DM: 10.971004486083984, 0.5090954303741455
     ])
     
     transform_stellar = transforms.Compose([
         transforms.Lambda(lambda x: torch.log10(x + 1e-8)),  # Log transformation
-        transforms.Lambda(lambda x: (x - 0.11826974898576736) / 1.0741989612579346)
         transforms.Resize((config["image_size"], config["image_size"])),  # Resize to 64x64
+        transforms.Lambda(lambda x: (x - 0.11826974898576736) / 1.0741989612579346)
         # transforms.Normalize((0.11826974898576736,), (1.0741989612579346,)) # Global Normalization Stellar: 0.11826974898576736, 1.0741989612579346,
     ])
 
-    dm_dataset = SlicedDataset(config["dm_file"], transform=transform_dm)
-    dm_dataloader = DataLoader(dm_dataset, batch_size=config["batch_size"], shuffle=False)
-    stellar_dataloader = None
+    # dm_dataset = SlicedDataset(config["dm_file"], transform=transform)
+    # dm_dataloader = DataLoader(dm_dataset, batch_size=config["batch_size"], shuffle=False)
+    filenames = [config["dm_file"]]
+    transform = [transform_dm]
     if args.conditional:
-        stellar_dataset = SlicedDataset(config["stellar_file"], transform=transform_stellar)
-        stellar_dataloader = DataLoader(stellar_dataset, batch_size=config["batch_size"], shuffle=False)
+        filenames.append(config["stellar_file"])
+        transform.append(transform_stellar)
         config["conditioning_channels"] = 1 # Change this as we add modalities
 
+    paired_dataset = PairedDataset(filenames, transform=transform)
+    PairedDataloader = DataLoader(paired_dataset, batch_size=config["batch_size"], shuffle=True, num_workers = config["num_workers"])
+    # stellar_dataloader = None
+    # if args.conditional:
+    #     # stellar_dataset = SlicedDataset(config["stellar_file"], transform=transform)
+    #     stellar_dataloader = DataLoader(stellar_dataset, batch_size=config["batch_size"], shuffle=False)
+    #     config["conditioning_channels"] = 1 # Change this as we add modalities
+
     # Initialize the noise scheduler
-    noise_scheduler = DDPMScheduler(num_train_timesteps=config["num_timesteps"], clip_sample = False)
+    noise_scheduler = DDPMScheduler(num_train_timesteps=config["num_timesteps"], clip_sample=False)
+
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = DiffUNet(config, conditional=args.conditional).to(device)
@@ -105,11 +117,10 @@ def main(args):
     # Prepare everything with Accelerator
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
-    model, optimizer, dm_dataloader, stellar_dataloader = accelerator.prepare(model, optimizer, dm_dataloader, stellar_dataloader)
+    model, optimizer, PairedDataloader = accelerator.prepare(model, optimizer, PairedDataloader)
 
     epoch_losses = []
     for epoch in range(config["epochs"]):
-
         vis = True
         total_loss = 0.0
         num_batches = 0
@@ -117,26 +128,17 @@ def main(args):
         ep_dir = os.path.join(save_path, f'ep{epoch}')
         os.makedirs(ep_dir, exist_ok=True)
 
-        # Set up progress bar for the current epoch
-        if args.conditional:
-            combined_maps = zip(stellar_dataloader, dm_dataloader)
-            batch_progress = tqdm(combined_maps, desc=f"Epoch {epoch+1}/{config['epochs']}", leave=False)
-        else:
-            combined_maps = dm_dataloader
-            batch_progress = tqdm(combined_maps, desc=f"Epoch {epoch+1}/{config['epochs']}", leave=False)
+        batch_progress = tqdm(PairedDataloader, desc=f"Epoch {epoch+1}/{config['epochs']}", leave=False)
         
         # Batch processing within epoch
         for maps in batch_progress:
-        
+            dm_maps = maps[0].to(device)
             if args.conditional:
-                stellar_maps, dm_maps = maps[0].to(device), maps[1].to(device)
-            else:
-                dm_maps = maps.to(device)
+                stellar_maps = add_gaussian_noise(maps[1].to(device), sigma=config["sigma_noise"]) # adding gaussian noise in log transformed space, poisson noise in original space
 
             noise = torch.randn_like(dm_maps).to(device)
             timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (dm_maps.shape[0],), device=device).long()
             noisy_dm = noise_scheduler.add_noise(dm_maps, noise, timesteps)
-            
 
             # Model prediction
             if args.conditional:
@@ -157,13 +159,26 @@ def main(args):
             num_batches += 1
             batch_progress.set_postfix(batch_loss=loss.item())  # Shows current batch loss
 
-        scheduler.step()
-        if vis:
-                fig = plt.figure()
-                sample_img = plt.imshow(dm_maps[0][0].cpu().numpy(), cmap='viridis')
-                fig.colorbar(sample_img)
-                plt.savefig(os.path.join(ep_dir, "GT.png"))
+            if vis:
+                pred_vis = (pred_noise-noise)
+                fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+                sample_img_gt = axes[0].imshow(dm_maps[0][0].cpu().numpy(), cmap='viridis')
+                axes[0].set_title("Ground Truth")
+                axes[0].axis('off')
+                fig.colorbar(sample_img_gt, ax=axes[0], fraction=0.046, pad=0.04)
+                sample_img_stellar = axes[1].imshow(stellar_maps[0][0].cpu().numpy(), cmap='viridis')
+                axes[1].set_title("Stellar Map")
+                axes[1].axis('off')
+                fig.colorbar(sample_img_stellar, ax=axes[1], fraction=0.046, pad=0.04)
+                sample_img_estimated = axes[2].imshow(pred_vis[0][0].detach().cpu().numpy(), cmap='viridis')
+                axes[2].set_title("Estimated DM")
+                axes[2].axis('off')
+                fig.colorbar(sample_img_estimated, ax=axes[2], fraction=0.046, pad=0.04)
+                plt.tight_layout()
+                plt.savefig(os.path.join(ep_dir, "comparison.png"))
                 plt.close(fig)
+
+        scheduler.step()
 
         # Average loss for the epoch
         avg_loss = total_loss / num_batches
@@ -176,7 +191,7 @@ def main(args):
         print(f"Model saved to {model_save_path}")
 
         # Sampling step
-        sample_v2(model, noise_scheduler, ep_dir, condition_loader=stellar_dataloader, device=device)
+        sample_v3(model, noise_scheduler, ep_dir, loader=PairedDataloader, conditional=config["conditional"], device=device)
 
     # Save all epoch losses
     np.save(f'{save_path}/losses.npy', np.array(epoch_losses))

@@ -123,7 +123,7 @@ transform = transforms.Compose([transforms.ToTensor(),
 Illustris_dataset = NPYDataset(npy_file, num_samples=100, transform=transform)
 Illustris_dataloader = DataLoader(Illustris_dataset, batch_size=16, shuffle=True)
 
-path = "/groups/mlprojects/dm_diffution/power_spectra/sample_imgs2_epoch20.pt"
+path = "/groups/mlprojects/dm_diffusion/power_spectra/sample_imgs2_epoch20.pt"
 samples = torch.load(path)
 
 boxsize = 6.25
