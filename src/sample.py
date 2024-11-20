@@ -6,69 +6,100 @@ import torchvision
 from torchvision import transforms
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
+from datasets import SlicedDataset, PairedDataset, NPYDataset
+
 from diffusers import DDPMScheduler
 from diffusers import UNet2DModel
+from models import DiffUNet
 
 from tqdm import tqdm
 from datasets import SlicedDataset, NPYDataset
-from utils import LogTransform, sample, generate_sample
-
+from utils import sample, get_constants, add_gaussian_noise
 from models import DarkMatterUNet
 
 from datetime import datetime
 import os
 import argparse
+import yaml
 
 def parse_args():
     parser = argparse.ArgumentParser(description="A script to parse training parameters.")
     
     # Adding arguments
+    parser.add_argument("--dataset", default="IllustrisTNG", type=str, required=False, help="IllustrisTNG, Astrid, or SIMBA.")
     parser.add_argument("--model_path", type=str, required=True, help="Path to specific model.")
-    parser.add_argument("--out_path", type=str, required=False, default=None, help="Path to save models.")
-    parser.add_argument("--img_size", type=int, required=False, default=128, help="Image size. Single int, (H = W).")
+    parser.add_argument("--batch_size", type=int, required=False, default=12, help="Batch size for training.")
+    parser.add_argument("--idx", type=int, required=False, default=None, help="Specific index in dataset of sample.")
+    
     
     # Parsing arguments
     return parser.parse_args()
 
 
 def main(args):
-    # Assuming that the model path is specific enough
     ep = args.model_path.split('_')[-1].split('.')[0]
-    save_path = '/'.join(args.model_path.split('/')[:-1])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # model = UNet2DModel(
-    #     sample_size=args.img_size,  # the target image resolution
-    #     in_channels=1,  # the number of input channels, 3 for RGB images
-    #     out_channels=1,  # the number of output channels
-    #     layers_per_block=2,  # how many ResNet layers to use per UNet block
-    #     block_out_channels=(64, 128, 256),  # the number of output channels for each UNet block
-    #     down_block_types=(
-    #         "DownBlock2D",  # a regular ResNet downsampling block
-    #         "DownBlock2D",
-    #         "AttnDownBlock2D",  # a ResNet downsampling block with spatial self-attention
-    #     ),
-    #     up_block_types=(
-    #         "AttnUpBlock2D",  # a ResNet upsampling block with spatial self-attention
-    #         "UpBlock2D",
-    #         "UpBlock2D",
-    #     ),
-    # # )
-    # model = DarkMatterUNet(in_channels=1, out_channels=1, base_channels=64)
-    # model.load_state_dict(torch.load(args.model_path, map_location=device))
-    # # model=torch.load(args.model_path,  map_location=torch.device('cpu'))
-    # noise_scheduler = DDPMScheduler(num_train_timesteps=1000)
-    # model_sample = sample(model, noise_scheduler, )
-
-
+    
+    # e.g. /groups/mlprojects/dm_diffusion/model_out/lr0.0001_step1000_size64_condTrue/20241118_182815/model_epoch_10.pt
     model_path = args.model_path
-    noise_scheduler = DDPMScheduler(num_train_timesteps=10000)
-    model = DarkMatterUNet(in_channels=1, out_channels=1, base_channels=64).to(device)
-    out_path = f'{save_path}/ep{ep}_sample.png'
-    generate_sample(model_path, model, noise_scheduler, out_path, img_size=64, device='cuda')
+    config_path = os.path.dirname(model_path)
+    folder_path = os.path.join(config_path, f"ep{ep}")
+    
+    with open(os.path.join(config_path, "config.yaml"), "r") as file:
+        config = yaml.safe_load(file)
+    
+    print(config)
+
+    constants = get_constants()
+
+    transform_dm = transforms.Compose([
+        transforms.Lambda(lambda x: torch.log10(x + 1e-8)),  # Log transformation
+        transforms.Resize((config["image_size"], config["image_size"])),  # Resize to 64x64
+        transforms.Lambda(lambda x: (x - constants['dm_mean']) / constants['dm_std'])
+    ])
+    
+    transform_stellar = transforms.Compose([
+        transforms.Lambda(lambda x: torch.log10(x + 1e-8)),  # Log transformation
+        transforms.Resize((config["image_size"], config["image_size"])),  # Resize to 64x64
+        transforms.Lambda(lambda x: (x - constants['stellar_mean']) / constants['stellar_std'])
+    ])
+
+    filenames = [config["dm_file"]]
+    transform = [transform_dm]
+    if config["conditional"]:
+        filenames.append(config["stellar_file"])
+        transform.append(transform_stellar)
+        config["conditioning_channels"] = 1 
+
+    paired_dataset = PairedDataset(filenames, transform=transform)
+    PairedDataloader = DataLoader(paired_dataset, batch_size=config["batch_size"], shuffle=True, num_workers = config["num_workers"])
+
+    noise_scheduler = DDPMScheduler(num_train_timesteps=config["num_timesteps"], clip_sample=False)
+    
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    sample_path = os.path.join(folder_path, f'sampling_{timestamp}')
+    os.makedirs(sample_path, exist_ok=True)
+
+    
+    
+    model = DiffUNet(config, conditional=config["conditional"]).to(device)
+    model.to(device)
+    model.load_state_dict(torch.load(model_path))
+    sample(model, noise_scheduler, sample_path, loader=PairedDataloader, conditional=config["conditional"], device=device, idx=args.idx, sigma_noise=config["sigma_noise"])
+    print(f"sample succesfully saved in {sample_path}")
 
 
     
 if __name__ == "__main__":
     args = parse_args()
     main(args)
+    
+'''
+Load the model
+set args for this
+Load the contstants
+call sample 
+import model
+'''    
