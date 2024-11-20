@@ -67,7 +67,7 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Define transformations
+    # Define transformations
     transform = transforms.Compose([
         transforms.Lambda(lambda x: torch.log10(x + 1e-8)),  # Log transformation
         transforms.Resize((config["image_size"], config["image_size"])),  # Resize to 64x64

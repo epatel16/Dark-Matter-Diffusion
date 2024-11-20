@@ -75,14 +75,14 @@ def main(args):
     
     transform_dm = transforms.Compose([
         transforms.Lambda(lambda x: torch.log10(x + 1e-8)),  # Log transformation
-        transforms.Lambda(lambda x: (x - 10.971004486083984) / 0.5090954303741455)
+        transforms.Lambda(lambda x: (x - 10.971004486083984) / 0.5090954303741455),
         transforms.Resize((config["image_size"], config["image_size"])),  # Resize to 64x64
         # transforms.Normalize((10.971004486083984,), (0.5090954303741455,)) # Global Normalization DM: 10.971004486083984, 0.5090954303741455
     ])
     
     transform_stellar = transforms.Compose([
         transforms.Lambda(lambda x: torch.log10(x + 1e-8)),  # Log transformation
-        transforms.Lambda(lambda x: (x - 0.11826974898576736) / 1.0741989612579346)
+        transforms.Lambda(lambda x: (x - 0.11826974898576736) / 1.0741989612579346),
         transforms.Resize((config["image_size"], config["image_size"])),  # Resize to 64x64
         # transforms.Normalize((0.11826974898576736,), (1.0741989612579346,)) # Global Normalization Stellar: 0.11826974898576736, 1.0741989612579346,
     ])
