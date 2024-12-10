@@ -20,27 +20,31 @@ You need your access password and Duo 2FA authentication (for Caltech HPC).
 
 To install conda:
 ```sh
-# Install Conda
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 sh ./Miniconda3-latest-Linux-x86_64.sh
-
-# Conda set up using new installation
+```
+To set up conda using new installation:
+```sh
 source ~/.bashrc
-
-# Set up for jupyter notebook
+```
+To set up to use jupyter notebook (not strictly required):
+```sh
 conda install ipykernel
 python -m ipykernel install --user --name base --display-name "Python (base)"
 conda install -c anaconda jupyter
 ```
 
-To create the environment and enable, you should run:
+To create our environment, run:
 
 ```console
 $ conda env create -f environment.yml -n dm_diff
 $ conda init bash
 $ conda init zsh
 $ source ~/.bashrc
+```
 
+To activate the environment, run the following.
+```console
 (base) [username@login1 Dark-Matter-Diffusion]$ conda activate dm_diff
 (dm_diff) [username@login1 Dark-Matter-Diffusion]$ 
 ```
@@ -84,7 +88,7 @@ Where `<dataset>` is replaced by 'Astrid', 'IllustrisTNG', or 'SIMBA'.
 
 After setup, you can run the following to train:
 ```console
-(dm_diff) [username@login1 Dark-Matter-Diffusion]$ python src/train.py --exp_name default_train
+python src/train.py --exp_name default_train
 ```
 
 This will create a folder called `model_out/<exp_name>/<timestamp>/`. In training, the model is saved at each epoch in a file called `model_epoch_<epoch>.pt`, the config file for this model is saved in `config.yaml`, and the losses are saved in `losses.npy`. 
@@ -133,7 +137,7 @@ We have uploaded some sample model checkpoints to `/checkpoints/<model_type>/`. 
 ## Sampling from Trained Models
 To sample from a created model, run the following command:
 ```console
-(dm_diff) [username@login1 Dark-Matter-Diffusion]$ python src/sample_multiple.py --model_path <path_to_model>
+python src/sample_multiple.py --model_path <path_to_model>
 ```
 Replacing `<path_to_model>` with the `.pt` file corresponding to your model. 
 
