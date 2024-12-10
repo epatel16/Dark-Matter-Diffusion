@@ -412,6 +412,152 @@ def corr_R(all_samples, gt, out_path, dataset):
   plt.title(dataset)
   plt.savefig(os.path.join(out_path, "corr.png"))
 
+def sample_multiple_ood(model, noise_scheduler, out_path, loader, config, constants=None, conditional=True, device='gpu', idx=None, N=10):
+    """
+    Generate multiple samples using the same GT and guides, calculate the mean and std, 
+    and save results including a combined visualization. Accounts for missing modalities
+    """
+    model.eval()
+    if idx is None: 
+        idx = random.randint(0, len(loader.dataset) - 1)
+    gt = loader.dataset[idx][0].unsqueeze(0).to(device)
+    guides = []
+    
+    if constants is None:
+        constants = get_constants(config["sample_dataset"])
+    gt_denormalized = denormalize(gt, mean=constants['dm_mean'], std=constants['dm_std'])
+    # Plot GT
+    plot_individual_img(gt, save_path=os.path.join(out_path, "ground_truth.png"), \
+        mean=constants['dm_mean'], std=constants['dm_std'], idx=idx, title='DM Guide')
+    torch.save(gt_denormalized, os.path.join(out_path, "ground_truth.pt"))
+
+    # Handle guide(s) based on configuration
+    if conditional and config: 
+        cond_idx = 1
+        if config["stellar"]:
+            if config["sample_stellar"]:
+                stellar_guide = add_gaussian_noise(loader.dataset[idx][cond_idx].unsqueeze(0).to(device), sigma=config["sigma_noise_stellar"])
+                guides.append(stellar_guide)
+                torch.save(stellar_guide, os.path.join(out_path, "stellar_guide.pt"))
+                cond_idx += 1
+                # Plot Stellar
+                plot_individual_img(stellar_guide, save_path=os.path.join(out_path, "stellar_guide.png"), \
+                    mean=constants['stellar_mean'], std=constants['stellar_std'], idx=idx, title='Stellar Guide')
+            else:
+                stellar_guide = torch.randn(1, 1, model.unet.sample_size, model.unet.sample_size).to(device)
+                guides.append(stellar_guide)
+
+        if config["frb"]:
+            if config["sample_frb"]:
+                frb_guide =  loader.dataset[idx][cond_idx].unsqueeze(0).to(device) # already selects pixels differently based on iteration
+                guides.append(frb_guide)
+                torch.save(frb_guide, os.path.join(out_path, "frb_guide.pt"))
+                cond_idx += 1
+                # Plot FRB
+                plot_individual_img(frb_guide, save_path=os.path.join(out_path, "frb_guide.png"), \
+                    mean=constants['gas_mean'], std=constants['gas_std'], idx=idx, title='FRB Guide')
+            else:
+                frb_guide = torch.randn(1, 1, model.unet.sample_size, model.unet.sample_size).to(device)
+                guides.append(frb_guide)
+
+        if config["lensing"]:
+            if config["sample_lens"]:
+                lens1_guide =  add_gaussian_noise(loader.dataset[idx][cond_idx].unsqueeze(0).to(device), sigma=config["sigma_noise_lensing"]) # already selects pixels differently based on iteration
+                guides.append(lens1_guide)
+                torch.save(lens1_guide, os.path.join(out_path, "lens1_guide.pt"))
+                cond_idx += 1
+                lens2_guide =  add_gaussian_noise(loader.dataset[idx][cond_idx].unsqueeze(0).to(device), sigma=config["sigma_noise_lensing"]) # already selects pixels differently based on iteration
+                guides.append(lens2_guide)
+                torch.save(lens2_guide, os.path.join(out_path, "lens2_guide.pt"))
+                cond_idx += 1
+                # Plot lensing
+                plot_individual_img(lens1_guide, save_path=os.path.join(out_path, "lens1_guide.png"), \
+                    mean=constants['lens1_mean'], std=constants['lens1_std'], idx=idx, title='Lens1 Guide')
+                plot_individual_img(lens2_guide, save_path=os.path.join(out_path, "lens2_guide.png"), \
+                    mean=constants['lens2_mean'], std=constants['lens2_std'], idx=idx, title='Lens2 Guide')
+            else:
+                lens1_guide = torch.randn(1, 1, model.unet.sample_size, model.unet.sample_size).to(device)
+                guides.append(lens1_guide)
+                lens2_guide = torch.randn(1, 1, model.unet.sample_size, model.unet.sample_size).to(device)
+                guides.append(lens2_guide)
+
+    all_samples = []
+    for run in range(N): # hard coded at N = 10 samples for now
+        sample = torch.randn(1, 1, model.unet.sample_size, model.unet.sample_size).to(device)
+        for t in noise_scheduler.timesteps:
+            with torch.no_grad():
+                residual = model(sample, t, guides)
+            sample = noise_scheduler.step(residual, t, sample).prev_sample
+        # Denormalize samples
+        sample = denormalize(sample, mean=constants['dm_mean'], std=constants['dm_std'])
+        all_samples.append(sample.cpu())
+        torch.save(sample, os.path.join(out_path, f'sample_{run}.pt'))
+    
+    # Calculate mean and std
+    stacked_samples = torch.stack(all_samples)  # Shape: (N, 1, H, W)
+    mean_sample = stacked_samples.mean(dim=0)
+    std_sample = stacked_samples.std(dim=0)
+
+    # Calculate psnr
+    gt_denormalized_dup = gt_denormalized.repeat(N, 1, 1, 1)
+    psnr_samples, mse_samples = psnr_mse(stacked_samples, gt_denormalized_dup)
+    print(f'Sample PSNR: {psnr_samples}, Sample MSE: {mse_samples}')
+    torch.save({'psnr': psnr_samples, 'mse': mse_samples}, os.path.join(out_path, 'metrics.pt'))
+
+    # Calculate correlations
+    correlation_samples = calculate_correlation_exponentiated(gt_denormalized_dup, stacked_samples)
+    plt.figure(figsize=(12, 6))
+    plt.boxplot(
+        [correlation_samples],
+        patch_artist=True,
+        labels=["DM vs Generated"],
+        boxprops=dict(facecolor="skyblue"),
+    )
+    plt.ylabel("Correlation Coefficient")
+    plt.title("Correlation Coefficients (Exponentiated)")
+    corr_path = os.path.join(out_path, "dm_correlation.png")
+    plt.savefig(corr_path)
+    print(f"Boxplot saved to {corr_path}")
+
+    # Save mean and std images
+    fig, ax = plt.subplots(1, 3, figsize=(18, 6))
+    ax[0].imshow(gt_denormalized[0][0].cpu().numpy(), cmap='viridis')
+    ax[0].set_title('Ground Truth')
+    ax[0].axis('off')
+    
+    ax[1].imshow(mean_sample[0][0].numpy(), cmap='viridis')
+    ax[1].set_title('Mean of Samples')
+    ax[1].axis('off')
+    
+    ax[2].imshow(std_sample[0][0].numpy(), cmap='viridis')
+    ax[2].set_title('Std of Samples')
+    ax[2].axis('off')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_path, "mean_std.png"))
+    plt.close(fig)
+
+    # Save all samples in a grid
+    fig, axes = plt.subplots(2, 5, figsize=(20, 8))
+    axes = axes.flatten()
+    for i, (sample, ax) in enumerate(zip(all_samples, axes)):
+        im = ax.imshow(sample[0][0].numpy(), cmap='viridis')
+        ax.set_title(f'Sample {i+1}')
+        ax.axis('off')
+        cbar = fig.colorbar(im, ax=ax, orientation='vertical', shrink=0.8)
+        cbar.ax.tick_params(labelsize=8)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_path, "all_samples.png"))
+    plt.close(fig)
+
+    power_spectra(all_samples, gt_denormalized, out_path, config["sample_dataset"])
+    corr_R(all_samples, gt_denormalized, out_path, config["sample_dataset"])
+
+    print(f'All results saved at {out_path}!')
+    return mean_sample, std_sample
+
+
 def sample_multiple(model, noise_scheduler, out_path, loader, config, constants=None, conditional=True, device='gpu', idx=None, N=10):
     """
     Generate multiple samples using the same GT and guides, calculate the mean and std, 

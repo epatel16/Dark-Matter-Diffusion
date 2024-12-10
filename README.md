@@ -185,6 +185,28 @@ The following flags are used to run this.
 | --change          | None    | Yes      | Variable changed: stellar, frb, or lens.              |
 | --idx             | None    | No       | Specific index in dataset of sample.                  |
 
+
+To sample out of distribution (on a new dataset or using fewer modalities), use `sample_multiple_ood.py` with the following arguments. Note, the inputted model must have already been trained with any modality you wish to condition on.
+
+Example run:
+```console
+python sample_multiple_ood.py --model_path <path-to-model> --stellar --dataset Astrid --N 10
+```
+Conducts inference, guiding only on the stellar modality. The model passed is trained on stellar, frb, and lensing data.
+
+| Argument      | Default    | Required | Help                                            |
+|---------------|------------|----------|-------------------------------------------------|
+| --dataset     | 'Astrid'   | No       | Path to specific model.                         |
+| --model_path  | None       | Yes      | Path to specific model.                         |
+| --batch_size  | 12         | No       | Batch size for training.                        |
+| --idx         | None       | No       | Specific index in dataset of sample.            |
+| --N           | 10         | No       | Number of samples to generate.                  |
+| --stellar     | False      | No       | To condition on stellar (flag).                 |
+| --frb         | False      | No       | To condition on frb (flag).                     |
+| --lensing     | False      | No       | To condition on lensing (flag).                 |
+| --out_path    | sample_ood/| No       | Path to save samples in.                        |
+
+
 ### Metrics/ Visuals
 The files `sample_multiple.py` and `sample_comparison.py` calculate our metrics and generate experimental visualizations. 
 `sample_multiple.py` generates `N` images from different seeds given the same ground truth (with an option to specify the index of the ground truth) and computes PSNR, MSE, Correlations, Power Spectra Correlations, and Power Spectra over these samples. See the above section for how to run these files.

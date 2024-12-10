@@ -84,7 +84,7 @@ def main(args):
     config["lensing"] = not args.no_lensing
     
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    /groups/mlprojects/dm_diffusion/sample_ood
     if args.debug: # Enable debug mode, send all runs to debug folder
         args.out_path = os.path.join(args.out_path, 'DEBUG')
     save_path = os.path.join(args.out_path, os.path.join(f"lr{args.learning_rate}_step{args.timesteps}_size{args.img_size}_cond{args.conditional}",config['exp_name']))

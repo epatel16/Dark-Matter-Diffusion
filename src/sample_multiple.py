@@ -114,11 +114,3 @@ def main(args):
 if __name__ == "__main__":
     args = parse_args()
     main(args)
-    
-'''
-Load the model
-set args for this
-Load the contstants
-call sample 
-import model
-'''    
