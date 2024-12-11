@@ -2,6 +2,10 @@
 
 The cosmic web, shaped by the distribution of dark matter, defines the large-scale structure of the universe. Galaxies serve as biased tracers of this web, but their distributions are influenced by both dark matter clustering and other astrophysical processes, introducing uncertainties in cosmological reconstructions. Prior work has used diffusion to reconstruct dark matter fields from stellar mass distributions, marginalizing over astrophysical and cosmological uncertainties. We build a diffusion model capable of conditioning on additional data types, including stellar mass maps, fast radio burst (FRB) maps and gravitational lensing maps, to refine dark matter reconstructions. FRBs provide dispersion measures that probe ionized gas, while gravitational lensing directly traces dark matter through light deflection, with lensing shear maps derived from total mass distributions via a Fast Fourier Transform (FFT). These multi-modal inputs improve the model’s ability to disentangle astrophysical uncertainties and enhance accuracy. Our multi-modal model progressively denoises noisy dark matter maps, achieving cross-correlation values exceeding 0.75 across CAMELS datasets. We evaluate the impact of varying signal-to-noise ratio (SNR) for each modality, demonstrating improved reconstruction fidelity with higher SNR values. Finally, applying the model to Hubble Space Telescope shear maps conditioned on dark matter and Astrid lensing data validates its real-world applicability, advancing our understanding of the cosmic web and establishing a robust framework for future dark matter studies. 
 
+![Alt text](/assets/sample.png)
+![Alt text](/assets/baseline_guides.png)
+![Alt text](/assets/baseline_mean_std.png)
+
 ## Setup on HPC
 
 For computing, we used both Google Colab and Caltech HPC. We show here how to set up the codebase on HPC (Caltech's High Performance Computing clusters).
@@ -131,12 +135,12 @@ The following arguments may be adjusted in terminal for training:
 | --no_lensing           | False       | Disable Lensing (include flag to omit).           |
 | --exp_name             | None        | Experiment name (required).                       |
 
-![Alt text](/assets/sample.png)
 
 ### Model Checkpoints
 We have uploaded model checkpoints corresponding to the experiments presented in our paper to `/checkpoints/<model_type>/`. Each checkpoint directory comes with a `config.yaml` file. Directories in this file will need to be updated based on where the data is located. Our baseline model (most corrupted input data to simulate real measurements) is located in `checkpoints/stellar0.1_lens10_FRB1p_256/`.
 
 ## Sampling from Trained Models
+
 To sample from a created model, run the following command:
 ```console
 python src/sample_multiple.py --model_path <path_to_model>
@@ -145,9 +149,6 @@ Replacing `<path_to_model>` with the `.pt` file corresponding to your model.
 
 Upon sampling, the following directory will be created in the epoch folder corresponding to your model:
 `model_out/<exp_name>/<timestamp>/ep<epoch>/sampling_<timestamp of sampling>/`.
-
-![Alt text](/assets/ground_truth_guides.png)
-![Alt text](/assets/ground_truth_mean_std.png)
 
 The following flags are used to run `sample_multiple.py`:
 | Argument     | Default | Required | Help                                         |
