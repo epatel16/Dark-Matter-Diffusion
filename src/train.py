@@ -26,7 +26,7 @@ import yaml
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Parsing training parameters.")
+    parser = argparse.ArgumentParser(description="Parse training parameters.")
     
     # Adding arguments
     parser.add_argument("--dataset", default="Astrid", type=str, required=False, help="IllustrisTNG, Astrid, or SIMBA.")
@@ -84,7 +84,7 @@ def main(args):
     config["lensing"] = not args.no_lensing
     
 
-    /groups/mlprojects/dm_diffusion/sample_ood
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.debug: # Enable debug mode, send all runs to debug folder
         args.out_path = os.path.join(args.out_path, 'DEBUG')
     save_path = os.path.join(args.out_path, os.path.join(f"lr{args.learning_rate}_step{args.timesteps}_size{args.img_size}_cond{args.conditional}",config['exp_name']))

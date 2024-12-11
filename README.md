@@ -131,6 +131,8 @@ The following arguments may be adjusted in terminal for training:
 | --no_lensing           | False       | Disable Lensing (include flag to omit).           |
 | --exp_name             | None        | Experiment name (required).                       |
 
+![Alt text](/assets/sample.png)
+
 ### Model Checkpoints
 We have uploaded some sample model checkpoints to `/checkpoints/<model_type>/`. The following checkpoints are available to sample from.
 
@@ -145,6 +147,7 @@ Upon sampling, the following directory will be created in the epoch folder corre
 `model_out/<exp_name>/<timestamp>/ep<epoch>/sampling_<timestamp of sampling>/`.
 
 ![Alt text](/assets/ground_truth_guides.png)
+![Alt text](/assets/ground_truth_mean_std.png)
 
 The following flags are used to run `sample_multiple.py`:
 | Argument     | Default | Required | Help                                         |
