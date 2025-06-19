@@ -282,7 +282,7 @@ def psnr_mse(sample, ground_truth):
     mse = torch.mean((ground_truth - sample) ** 2)
     if mse==0: return float('inf')
     
-    max_val = max(sample.max().item(), sample.max().item())
+    max_val = max(sample.max().item(), ground_truth.max().item())
     return 20* torch.log10(max_val/torch.sqrt(mse)), mse
 
 
