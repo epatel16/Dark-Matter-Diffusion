@@ -9,9 +9,12 @@ from torchvision import transforms
 from PIL import Image
 
 
+# def get_constants(dataset_name='IllustrisTNG'):
+#     path = f'/groups/mlprojects/dm_diffusion/data/{dataset_name}_constants.pt'
+#     return torch.load(path)
 def get_constants(dataset_name='IllustrisTNG'):
-    path = f'/groups/mlprojects/dm_diffusion/data/{dataset_name}_constants.pt'
-    return torch.load(path)
+    path = f'/content/Dark-Matter-Diffusion/data/constants.pt'
+    return torch.load(path)[dataset_name]
 
 def denormalize(tensor, mean, std): #TODO: make a lookup table, these are params for illustris
   """
